@@ -21,8 +21,8 @@ alias out_layout = Layout.row_major(BATCH, 1)
 fn axis_sum[
     in_layout: Layout, out_layout: Layout
 ](
-    output: LayoutTensor[mut=True, dtype, out_layout],
-    a: LayoutTensor[mut=False, dtype, in_layout],
+    output: LayoutTensor[dtype, out_layout, MutAnyOrigin],
+    a: LayoutTensor[dtype, in_layout, ImmutAnyOrigin],
     size: Int,
 ):
     global_i = block_dim.x * block_idx.x + thread_idx.x
@@ -36,19 +36,20 @@ fn axis_sum[
 
 def main():
     with DeviceContext() as ctx:
-        out = ctx.enqueue_create_buffer[dtype](BATCH).enqueue_fill(0)
-        inp = ctx.enqueue_create_buffer[dtype](BATCH * SIZE).enqueue_fill(0)
+        out = ctx.enqueue_create_buffer[dtype](BATCH)
+        out.enqueue_fill(0)
+        inp = ctx.enqueue_create_buffer[dtype](BATCH * SIZE)
+        inp.enqueue_fill(0)
         with inp.map_to_host() as inp_host:
             for row in range(BATCH):
                 for col in range(SIZE):
                     inp_host[row * SIZE + col] = row * SIZE + col
 
-        out_tensor = LayoutTensor[mut=False, dtype, out_layout](
-            out.unsafe_ptr()
-        )
-        inp_tensor = LayoutTensor[mut=False, dtype, in_layout](inp.unsafe_ptr())
+        out_tensor = LayoutTensor[dtype, out_layout, MutAnyOrigin](out)
+        inp_tensor = LayoutTensor[dtype, in_layout, ImmutAnyOrigin](inp)
 
-        ctx.enqueue_function[axis_sum[in_layout, out_layout]](
+        alias kernel = axis_sum[in_layout, out_layout]
+        ctx.enqueue_function_checked[kernel, kernel](
             out_tensor,
             inp_tensor,
             SIZE,
@@ -56,7 +57,8 @@ def main():
             block_dim=THREADS_PER_BLOCK,
         )
 
-        expected = ctx.enqueue_create_host_buffer[dtype](BATCH).enqueue_fill(0)
+        expected = ctx.enqueue_create_host_buffer[dtype](BATCH)
+        expected.enqueue_fill(0)
         with inp.map_to_host() as inp_host:
             for row in range(BATCH):
                 for col in range(SIZE):

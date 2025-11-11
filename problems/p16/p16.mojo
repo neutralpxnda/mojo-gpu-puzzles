@@ -19,9 +19,9 @@ alias layout = Layout.row_major(SIZE, SIZE)
 fn naive_matmul[
     layout: Layout, size: Int
 ](
-    output: LayoutTensor[mut=True, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    output: LayoutTensor[dtype, layout, MutAnyOrigin],
+    a: LayoutTensor[dtype, layout, ImmutAnyOrigin],
+    b: LayoutTensor[dtype, layout, ImmutAnyOrigin],
 ):
     row = block_dim.y * block_idx.y + thread_idx.y
     col = block_dim.x * block_idx.x + thread_idx.x
@@ -35,9 +35,9 @@ fn naive_matmul[
 fn single_block_matmul[
     layout: Layout, size: Int
 ](
-    output: LayoutTensor[mut=True, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    output: LayoutTensor[dtype, layout, MutAnyOrigin],
+    a: LayoutTensor[dtype, layout, ImmutAnyOrigin],
+    b: LayoutTensor[dtype, layout, ImmutAnyOrigin],
 ):
     row = block_dim.y * block_idx.y + thread_idx.y
     col = block_dim.x * block_idx.x + thread_idx.x
@@ -58,9 +58,9 @@ alias layout_tiled = Layout.row_major(SIZE_TILED, SIZE_TILED)
 fn matmul_tiled[
     layout: Layout, size: Int
 ](
-    output: LayoutTensor[mut=True, dtype, layout],
-    a: LayoutTensor[mut=False, dtype, layout],
-    b: LayoutTensor[mut=False, dtype, layout],
+    output: LayoutTensor[dtype, layout_tiled, MutAnyOrigin],
+    a: LayoutTensor[dtype, layout_tiled, ImmutAnyOrigin],
+    b: LayoutTensor[dtype, layout_tiled, ImmutAnyOrigin],
 ):
     local_row = thread_idx.y
     local_col = thread_idx.x
@@ -84,12 +84,15 @@ def main():
                 " '--tiled'"
             )
         size = SIZE_TILED if argv()[1] == "--tiled" else SIZE
-        out = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp1 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        inp2 = ctx.enqueue_create_buffer[dtype](size * size).enqueue_fill(0)
-        expected = ctx.enqueue_create_host_buffer[dtype](
-            size * size
-        ).enqueue_fill(0)
+        out = ctx.enqueue_create_buffer[dtype](size * size)
+        out.enqueue_fill(0)
+        inp1 = ctx.enqueue_create_buffer[dtype](size * size)
+        inp1.enqueue_fill(0)
+        inp2 = ctx.enqueue_create_buffer[dtype](size * size)
+        inp2.enqueue_fill(0)
+        expected = ctx.enqueue_create_host_buffer[dtype](size * size)
+        expected.enqueue_fill(0)
+
         with inp1.map_to_host() as inp1_host, inp2.map_to_host() as inp2_host:
             for row in range(size):
                 for col in range(size):
@@ -106,12 +109,13 @@ def main():
                             inp1_host[i * size + k] * inp2_host[k * size + j]
                         )
 
-        out_tensor = LayoutTensor[mut=False, dtype, layout](out.unsafe_ptr())
-        a_tensor = LayoutTensor[mut=False, dtype, layout](inp1.unsafe_ptr())
-        b_tensor = LayoutTensor[mut=False, dtype, layout](inp2.unsafe_ptr())
+        out_tensor = LayoutTensor[dtype, layout, MutAnyOrigin](out)
+        a_tensor = LayoutTensor[dtype, layout, ImmutAnyOrigin](inp1)
+        b_tensor = LayoutTensor[dtype, layout, ImmutAnyOrigin](inp2)
 
         if argv()[1] == "--naive":
-            ctx.enqueue_function[naive_matmul[layout, SIZE]](
+            alias kernel = naive_matmul[layout, SIZE]
+            ctx.enqueue_function_checked[kernel, kernel](
                 out_tensor,
                 a_tensor,
                 b_tensor,
@@ -119,7 +123,8 @@ def main():
                 block_dim=THREADS_PER_BLOCK,
             )
         elif argv()[1] == "--single-block":
-            ctx.enqueue_function[single_block_matmul[layout, SIZE]](
+            alias kernel = single_block_matmul[layout, SIZE]
+            ctx.enqueue_function_checked[kernel, kernel](
                 out_tensor,
                 a_tensor,
                 b_tensor,
@@ -128,17 +133,18 @@ def main():
             )
         elif argv()[1] == "--tiled":
             # Need to update the layout of the tensors to the tiled layout
-            out_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                out.unsafe_ptr()
+            out_tensor_tiled = LayoutTensor[dtype, layout_tiled, MutAnyOrigin](
+                out
             )
-            a_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp1.unsafe_ptr()
+            a_tensor_tiled = LayoutTensor[dtype, layout_tiled, ImmutAnyOrigin](
+                inp1
             )
-            b_tensor_tiled = LayoutTensor[mut=False, dtype, layout_tiled](
-                inp2.unsafe_ptr()
+            b_tensor_tiled = LayoutTensor[dtype, layout_tiled, ImmutAnyOrigin](
+                inp2
             )
 
-            ctx.enqueue_function[matmul_tiled[layout_tiled, SIZE_TILED]](
+            alias kernel = matmul_tiled[layout_tiled, SIZE_TILED]
+            ctx.enqueue_function_checked[kernel, kernel](
                 out_tensor_tiled,
                 a_tensor_tiled,
                 b_tensor_tiled,
